@@ -11,14 +11,19 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y grub-pc-bin grub-common xorriso wget
+          sudo apt install -y grub-pc-bin grub-common xorriso wget tar
+
+      - name: Download Alpine netboot
+        run: |
+          wget https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-netboot-3.23.2-x86_64.tar.gz
+          mkdir netboot
+          tar -xzf alpine-netboot-3.23.2-x86_64.tar.gz -C netboot
 
       - name: Prepare ISO structure
         run: |
           mkdir -p iso/boot/grub
-
-          wget https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot/vmlinuz-lts -O iso/boot/vmlinuz
-          wget https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot/initramfs-lts -O iso/boot/initrd
+          cp netboot/vmlinuz-lts iso/boot/vmlinuz
+          cp netboot/initramfs-lts iso/boot/initrd
 
           echo 'set timeout=5' > iso/boot/grub/grub.cfg
           echo 'set default=0' >> iso/boot/grub/grub.cfg
