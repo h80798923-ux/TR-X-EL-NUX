@@ -1,43 +1,137 @@
-name: TrixieOS ISO
+name: Build TrixieOS (BusyBox + Openbox + TRX)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y grub-pc-bin grub-common xorriso wget tar
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          git build-essential bc bison flex \
+          libssl-dev libncurses-dev \
+          grub-pc-bin xorriso mtools
 
-      - name: Download Alpine netboot
-        run: |
-          wget https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-netboot-3.23.2-x86_64.tar.gz
-          mkdir netboot
-          tar -xzf alpine-netboot-3.23.2-x86_64.tar.gz -C netboot
+    - name: Clone Buildroot
+      run: |
+        git clone https://github.com/buildroot/buildroot.git
+        cd buildroot
+        git checkout 2024.02
 
-      - name: Prepare ISO structure
-        run: |
-          mkdir -p iso/boot/grub
-          cp netboot/vmlinuz-lts iso/boot/vmlinuz
-          cp netboot/initramfs-lts iso/boot/initrd
+    - name: Configure Buildroot
+      run: |
+        cd buildroot
+        make defconfig
 
-          echo 'set timeout=5' > iso/boot/grub/grub.cfg
-          echo 'set default=0' >> iso/boot/grub/grub.cfg
-          echo 'menuentry "TrixieOS - ProjectA tarafından yapıldı" {' >> iso/boot/grub/grub.cfg
-          echo '  linux /boot/vmlinuz' >> iso/boot/grub/grub.cfg
-          echo '  initrd /boot/initrd' >> iso/boot/grub/grub.cfg
-          echo '}' >> iso/boot/grub/grub.cfg
+        # x86_64
+        sed -i 's/# BR2_x86_64 is not set/BR2_x86_64=y/' .config
 
-      - name: Build ISO
-        run: |
-          grub-mkrescue -o TrixieOS.iso iso
+        # Kernel (vanilla)
+        sed -i 's/# BR2_LINUX_KERNEL is not set/BR2_LINUX_KERNEL=y/' .config
+        echo 'BR2_LINUX_KERNEL_CUSTOM_VERSION=y' >> .config
+        echo 'BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.7.9"' >> .config
 
-      - name: Upload ISO
-        uses: actions/upload-artifact@v4
-        with:
-          name: TrixieOS-ISO
-          path: TrixieOS.iso
+        # BusyBox
+        echo 'BR2_PACKAGE_BUSYBOX=y' >> .config
+
+        # Xorg + Openbox
+        echo 'BR2_PACKAGE_XORG7=y' >> .config
+        echo 'BR2_PACKAGE_XSERVER_XORG_SERVER=y' >> .config
+        echo 'BR2_PACKAGE_OPENBOX=y' >> .config
+        echo 'BR2_PACKAGE_XTERM=y' >> .config
+        echo 'BR2_PACKAGE_DEJAVU=y' >> .config
+
+        # Rootfs tar
+        echo 'BR2_TARGET_ROOTFS_TAR=y' >> .config
+
+        make olddefconfig
+
+    - name: Add TrixieOS files + TRX
+      run: |
+        cd buildroot
+        ROOT=board/trixieos/rootfs
+
+        mkdir -p $ROOT/etc
+        cat <<EOF > $ROOT/etc/os-release
+        NAME="TrixieOS"
+        PRETTY_NAME="TrixieOS"
+        ID=trixieos
+        VERSION="1.0"
+        EOF
+
+        # Openbox autostart
+        mkdir -p $ROOT/root/.config/openbox
+        echo 'exec openbox-session' > $ROOT/root/.xinitrc
+
+        cat <<EOF > $ROOT/root/.profile
+        if [ -z "\$DISPLAY" ]; then
+          startx
+        fi
+        EOF
+
+        # TRX command
+        mkdir -p $ROOT/usr/bin
+        cat <<'EOF' > $ROOT/usr/bin/trx
+        #!/bin/sh
+        CMD="$1"
+        PKG="$2"
+        DIR="/opt/trx/packages"
+
+        case "$CMD" in
+          install)
+            if [ -f "$DIR/$PKG.trx" ]; then
+              echo "[trx] $PKG kuruluyor"
+              tar -xf "$DIR/$PKG.trx" -C /
+              echo "[trx] tamam"
+            else
+              echo "[trx] paket yok: $PKG"
+            fi
+            ;;
+          list)
+            ls "$DIR" 2>/dev/null | sed 's/.trx//'
+            ;;
+          *)
+            echo "Kullanım:"
+            echo "  trx install paket"
+            echo "  trx list"
+            ;;
+        esac
+        EOF
+        chmod +x $ROOT/usr/bin/trx
+
+        # TRX repo + örnek paket
+        mkdir -p $ROOT/opt/trx/packages
+        mkdir -p /tmp/hello/bin
+        echo -e '#!/bin/sh\necho Merhaba TrixieOS' > /tmp/hello/bin/hello
+        chmod +x /tmp/hello/bin/hello
+        tar -czf $ROOT/opt/trx/packages/hello.trx -C /tmp/hello .
+
+    - name: Build TrixieOS
+      run: |
+        cd buildroot
+        make -j$(nproc)
+
+    - name: Create Live ISO (GRUB)
+      run: |
+        mkdir iso
+        cp buildroot/output/images/bzImage iso/vmlinuz
+        cp buildroot/output/images/rootfs.tar iso/rootfs.tar
+
+        cat <<EOF > iso/grub.cfg
+        set timeout=3
+        menuentry "TrixieOS Live" {
+          linux /vmlinuz quiet
+        }
+        EOF
+
+        grub-mkrescue -o TrixieOS-Live.iso iso
+
+    - name: Upload ISO
+      uses: actions/upload-artifact@v4
+      with:
+        name: TrixieOS
+        path: TrixieOS-Live.iso
